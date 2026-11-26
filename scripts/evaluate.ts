@@ -1,0 +1,222 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { z } from 'zod';
+import { policies, sha256, type JobInput, type Policy, type Priority } from '../src/domain';
+import type { Attempt, Job, Run } from '../src/db';
+import type { getRunMetrics, operatorSnapshot } from '../src/metrics';
+
+type Metrics = Awaited<ReturnType<typeof getRunMetrics>>;
+type Operations = Awaited<ReturnType<typeof operatorSnapshot>>;
+type Workload = 'normal' | 'burst';
+const settings = z.object({
+  EVALUATION_API: z.url().default('http://localhost:3000'),
+  EVALUATION_TOKEN: z.string().min(24),
+  EVALUATION_REPEAT: z.coerce.number().int().min(1).max(20).default(3),
+  EVALUATION_FIRST_TRIAL: z.coerce.number().int().min(1).max(100).default(1),
+  EVALUATION_LONG_S: z.coerce.number().min(1).max(150).default(30),
+  EVALUATION_SHORT_S: z.coerce.number().min(1).max(150).default(8),
+  EVALUATION_NORMAL_INTERVAL_S: z.coerce.number().positive().max(600).optional(),
+  EVALUATION_STARTUP_S: z.coerce.number().positive().max(90).default(45),
+  EVALUATION_JOB_BUDGET: z.string().default('0.030'),
+  EVALUATION_MODE: z.enum(['full', 'smoke', 'hybrid']).default('full'),
+  EVALUATION_REQUIRE_EC2: z.enum(['true', 'false']).default('false'),
+}).parse(process.env);
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(new URL(path, settings.EVALUATION_API), {
+    ...options, signal: AbortSignal.timeout(20_000),
+    headers: { Authorization: `Bearer ${settings.EVALUATION_TOKEN}`, ...options.headers },
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(`${path}: ${body.error ?? response.status}`);
+  }
+  return response.status === 204 ? undefined as T : response.json();
+}
+
+const post = <T>(path: string, body: object, headers?: Record<string, string>) => api<T>(path, {
+  method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', ...headers },
+});
+
+function fixture(sampleCount: number, seed: number) {
+  let cursor = seed;
+  const samples = Array.from({ length: sampleCount }, (_, index) => {
+    cursor = (Math.imul(1664525, cursor) + 1013904223) >>> 0;
+    return Math.round(7000 * Math.sin(2 * Math.PI * index / 25) + (cursor % 300) - 150);
+  });
+  const bytes = Buffer.from(samples.join('\n') + '\n');
+  return { bytes, checksum: sha256(bytes), seed };
+}
+
+interface Entry {
+  id: string;
+  atSeconds: number;
+  deadlineSeconds: number;
+  priority: Priority;
+  expectedSeconds: number;
+  budgetUsd: string;
+  maxLag: number;
+  input: ReturnType<typeof fixture>;
+}
+
+function manifest(workload: Workload): Entry[] {
+  const smoke = settings.EVALUATION_MODE === 'smoke';
+  const hybrid = settings.EVALUATION_MODE === 'hybrid';
+  const long = smoke ? 1 : settings.EVALUATION_LONG_S;
+  const short = smoke ? 1 : settings.EVALUATION_SHORT_S;
+  const startup = smoke ? 1 : settings.EVALUATION_STARTUP_S;
+  const heavy = fixture(smoke ? 400 : 245_000, 531);
+  const lighter = fixture(smoke || hybrid ? 200 : 245_000, 532);
+  function entry(id: string, atSeconds: number, deadlineSeconds: number, priority: Priority, expectedSeconds: number, budgetUsd: string, bulk: boolean): Entry {
+    return {
+      id, atSeconds, deadlineSeconds, priority, expectedSeconds, budgetUsd,
+      maxLag: smoke || (hybrid && !bulk) ? 12 : bulk ? 2048 : 512, input: bulk ? heavy : lighter,
+    };
+  }
+  const budget = settings.EVALUATION_JOB_BUDGET;
+  if (workload === 'normal') {
+    const service = hybrid ? short : long;
+    const interval = smoke ? 0.3 : settings.EVALUATION_NORMAL_INTERVAL_S ?? (hybrid ? Math.max(10, service / 2 + 2) : Math.max(45, long + 5));
+    return Array.from({ length: smoke || hybrid ? 3 : 12 }, (_, index) =>
+      entry(`routine-${index + 1}`, index * interval, service + 45, 'normal', service, budget, !hybrid));
+  }
+  if (hybrid) {
+    const tight = startup + 9;
+    return [
+      entry('preload-1', 0, long * 4, 'normal', long, '0', true),
+      entry('preload-2', 0, long * 4, 'normal', long, '0', true),
+      entry('first-urgent', 10, tight, 'high', short, budget, false),
+      entry('second-urgent', 10, tight + 3, 'high', short, budget, false),
+      entry('local-only', 10, tight + 7, 'high', short, '0', false),
+      entry('routine', 10, long * 4, 'normal', short, budget, false),
+      entry('already-at-risk', 10, 3, 'high', short, budget, false),
+    ];
+  }
+  return [
+    entry('already-running-1', 0, long * 5, 'normal', long, '0', true),
+    entry('already-running-2', 0, long * 5, 'normal', long, '0', true),
+    ...Array.from({ length: smoke ? 2 : 8 }, (_, index) =>
+      entry(`backlog-${index + 1}`, smoke ? 0.4 : 2, long * 5, index < 6 ? 'high' : 'normal', long, budget, true)),
+    entry('deadline-rescue', smoke ? 0.4 : 8, startup + Math.max(10, short), 'high', short, budget, false),
+    entry('zero-budget', smoke ? 0.4 : 8, startup + Math.max(11, short), 'high', short, '0', false),
+    entry('already-at-risk', smoke ? 0.4 : 8, smoke ? 1.5 : 3, 'high', long, budget, true),
+  ];
+}
+
+async function jobEvidence(jobId: string, wallClockDeadline: number) {
+  const job = await api<Job & { attempts: Attempt[] }>(`/api/jobs/${jobId}`);
+  const winningAttempt = job.attempts.find(attempt => attempt.id === job.winning_attempt_id) ?? null;
+  return {
+    status: job.status,
+    deadlineAt: wallClockDeadline,
+    completedAt: job.terminal_at,
+    onTime: job.status === 'SUCCEEDED' && job.terminal_at! <= wallClockDeadline,
+    placement: job.decision,
+    winningAttempt,
+  };
+}
+
+async function runTrace(workload: Workload, policy: Policy, repeat: number, entries: Entry[]) {
+  const label = `${workload} / ${policy} / ${repeat + 1}`;
+  const run = await post<Run>('/api/runs', {
+    label, policy, manifest: { workload, repeat: repeat + 1, mode: settings.EVALUATION_MODE,
+      entries: entries.map(({ input, ...item }) => ({ ...item, seed: input.seed, inputSha256: input.checksum })) },
+  });
+  const begin = Date.now() + 500;
+  const submitted = await Promise.all(entries.map(async entry => {
+    const arrival = begin + entry.atSeconds * 1000;
+    await sleep(Math.max(0, arrival - Date.now()));
+    const spec: JobInput = {
+      type: 'vibration-v1', runId: run.id, inputSha256: entry.input.checksum, priority: entry.priority,
+      expectedSeconds: entry.expectedSeconds, budgetUsd: entry.budgetUsd,
+      deadline: new Date(arrival + entry.deadlineSeconds * 1000).toISOString(),
+      minLag: 1, maxLag: entry.maxLag, sampleRate: 1000,
+    };
+    const job = await post<Job>('/api/jobs', spec, { 'Idempotency-Key': randomUUID() });
+    const queued = await api<Job>(`/api/jobs/${job.id}/input`, {
+      method: 'PUT', headers: { 'Content-Type': 'text/csv' }, body: new Uint8Array(entry.input.bytes),
+    });
+    return { fixture: entry.id, jobId: job.id, plannedAt: arrival, admittedAt: queued.queued_at, deadlineAt: Date.parse(spec.deadline) };
+  }));
+  const until = Date.now() + 25 * 60_000;
+  while (Date.now() < until) {
+    const metrics = await api<Metrics>(`/api/runs/${run.id}/metrics`);
+    if (!metrics.counts.active && !metrics.cloud.active) {
+      await post('/api/runs/finish', { id: run.id });
+      const complete = await api<Metrics>(`/api/runs/${run.id}/metrics`);
+      const jobs = await Promise.all(submitted.map(async entry => ({
+        ...entry, ...await jobEvidence(entry.jobId, entry.deadlineAt),
+      })));
+      console.log(`${label}: ${complete.deadlines.hits}/${complete.deadlines.denominator} on time, ${complete.cloud.successes} EC2 results`);
+      return { workload, policy, repeat, submitted: jobs, metrics: complete };
+    }
+    await sleep(1000);
+  }
+  throw new Error(`Evaluation ${run.id} did not reach a terminal state.`);
+}
+
+type Replay = Awaited<ReturnType<typeof runTrace>>;
+
+function cloudRescues(result: Replay) {
+  if (result.workload !== 'burst' || result.policy !== 'qos') return [];
+  return result.submitted.flatMap(job => {
+    const attempt = job.winningAttempt;
+    const placement = job.placement;
+    if (!job.onTime || !attempt || attempt.target !== 'ec2' || !attempt.instance_id || !attempt.image_digest ||
+        !attempt.output_sha256 || placement?.reason !== 'cloud_rescues_deadline' ||
+        placement.localFinish === null || placement.localFinish <= job.deadlineAt ||
+        placement.cloudFinish === null || placement.cloudFinish > job.deadlineAt) return [];
+    const session = result.metrics.cloud.sessions.find(item => item.instance_id === attempt.instance_id &&
+      item.ready_at !== null && item.ready_at <= attempt.started_at &&
+      item.stopped_at !== null && item.stopped_at >= job.completedAt!);
+    return session ? [{
+      runId: result.metrics.run.id, jobId: job.jobId, attemptId: attempt.id, sessionId: session.id,
+      instanceId: attempt.instance_id, imageDigest: attempt.image_digest, checksum: attempt.output_sha256,
+      deadlineAt: job.deadlineAt, publishedAt: job.completedAt, stoppedAt: session.stopped_at,
+      localForecastAt: placement.localFinish, cloudForecastAt: placement.cloudFinish,
+    }] : [];
+  });
+}
+
+async function main() {
+  if (settings.EVALUATION_REQUIRE_EC2 === 'true') {
+    const ops = await api<Operations>('/api/runs/operations');
+    if (ops.cloudState !== 'stopped') throw new Error(`Live replay requires configured, stopped EC2 capacity. Observed: ${ops.cloudState}.`);
+  }
+  const folder = join('evaluation-output', new Date().toISOString().replaceAll(':', '-'));
+  await mkdir(folder, { recursive: true });
+  const results: Replay[] = [];
+  for (const workload of ['normal', 'burst'] as const) {
+    const entries = manifest(workload);
+    const repeats = settings.EVALUATION_MODE === 'smoke' ? 1 : settings.EVALUATION_REPEAT;
+    const firstRepeat = settings.EVALUATION_FIRST_TRIAL - 1;
+    for (let repeat = firstRepeat; repeat < firstRepeat + repeats; repeat++) {
+      for (let turn = 0; turn < policies.length; turn++) {
+        const policy = policies[(repeat + turn) % policies.length];
+        const result = await runTrace(workload, policy, repeat, entries);
+        results.push(result);
+        await writeFile(join(folder, `${workload}-${repeat + 1}-${policy}.json`), JSON.stringify(result, null, 2));
+      }
+    }
+  }
+  const comparison = results.filter(result => result.policy === 'qos').map(qos => ({
+    workload: qos.workload, repeat: qos.repeat + 1,
+    baselines: results.filter(row => row.workload === qos.workload && row.repeat === qos.repeat && row.policy !== 'qos').map(base => {
+      const additionalHits = qos.metrics.deadlines.hits - base.metrics.deadlines.hits;
+      const additionalComputeUsd = (qos.metrics.cloud.computeMicros - base.metrics.cloud.computeMicros) / 1_000_000;
+      return { policy: base.policy, additionalHits, additionalComputeUsd,
+        costPerAdditionalHit: additionalHits > 0 ? additionalComputeUsd / additionalHits : null };
+    }),
+  }));
+  await writeFile(join(folder, 'comparison.json'), JSON.stringify(comparison, null, 2));
+  const rescues = results.flatMap(cloudRescues);
+  await writeFile(join(folder, 'ec2-rescues.json'), JSON.stringify(rescues, null, 2));
+  console.log(`Saved run evidence in ${folder}.`);
+  if (settings.EVALUATION_REQUIRE_EC2 === 'true' && !rescues.length) {
+    throw new Error('No on-time EC2 rescue with observed shutdown was captured. Inspect the run evidence and calibration.');
+  }
+}
+
+main().catch(error => { console.error((error as Error).message); process.exitCode = 1; });
