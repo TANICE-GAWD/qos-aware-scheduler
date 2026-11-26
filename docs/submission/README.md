@@ -13,11 +13,11 @@ The QoS-Aware Hybrid Cloud Task Scheduler accepts a one-column vibration CSV, fo
 
 | Deliverable | Where to find it |
 |---|---|
-| Project proposal | [proposal.md](proposal.md): the problem, the five objectives, and the success checks the live demo has to meet |
-| System architecture | [architecture.md](architecture.md): the deployed path from the browser through API Gateway to the private app host, RDS, S3, and the burst worker |
-| Working implementation | [README](../../README.md) for the local stack, and the [hosted dashboard](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/) for the running control plane |
+| Project proposal | [proposal.md](proposal.md): the queue problem, the `vibration-v1` workload, five objectives, and the success checks |
+| System architecture | [architecture.md](architecture.md): the private AWS path, the web and scheduler split, job states, placement, and the trust boundary |
+| Working implementation | [Local setup](../../README.md#getting-started) in the project README, and the [hosted dashboard](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/) for the running control plane |
 | Cloud deployment and demonstration | [aws/HOSTED.md](../../aws/HOSTED.md) for the hosted stacks, and [demo.md](demo.md) for the three classroom scenarios |
-| Source code and README | [TANICE-GAWD/qos-aware-scheduler](https://github.com/TANICE-GAWD/qos-aware-scheduler) |
+| Source code and README | [TANICE-GAWD/qos-aware-scheduler](https://github.com/TANICE-GAWD/qos-aware-scheduler), with the file map in [Repository structure](../../README.md#repository-structure) |
 | Project report | Four-page PDF in the submission package, beside this repository |
 | Final presentation and live demonstration | Editable presentation in the handoff, presented with [demo.md](demo.md) |
 

@@ -745,7 +745,7 @@ QoS met four more burst deadlines than FCFS and tied priority, at about 14% lowe
 ## Repository Structure
 
 ```
-QoS-Aware_Scheduler/
+qos-aware-scheduler/
 ├── app/
 │   ├── api/[...parts]/route.ts     # Catch-all into src/http.ts
 │   ├── dashboard.tsx                # Sign-in, queue, submit, operator
