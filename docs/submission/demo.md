@@ -2,7 +2,7 @@
 
 ## Before presenting
 
-- Open the [hosted dashboard](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/) and [health endpoint](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/api/health). Sign in privately before sharing the screen. An authorized operator can use `./aws/use-hosted.ps1 -Mode Operator -Profile ucs531-qos` to copy the token to the clipboard. See the [AWS guide](../../aws/HOSTED.md#sign-in-and-connect-workers) for the per-user AWS CLI path.
+- Open the [hosted dashboard](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/) and [health endpoint](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/api/health). Sign in privately before sharing the screen. An authorized operator can use `./aws/use-hosted.ps1 -Mode Operator -Profile ucs531-qos` to copy the token to the clipboard. See the [AWS guide](../../aws/HOSTED.md#sign-in) for the per-user AWS CLI path.
 - For the scripted burst test, install the project dependencies with `npm ci` on Node.js 22 or newer. Keep the laptop's Docker engine running while the workers connect.
 - In **Operations**, check that the scheduler is active and EC2 is stopped. Start both laptop workers for the first two scenarios. If this is a fresh checkout, prepare the private environment file using the AWS guide.
 

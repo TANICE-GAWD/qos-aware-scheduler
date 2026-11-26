@@ -1,15 +1,26 @@
 # UCS531 Project Submission
 
-The QoS-Aware Hybrid Cloud Task Scheduler runs on AWS in `us-east-1`. It accepts vibration CSV jobs and schedules them on optional local Docker workers or an on-demand EC2 worker. The hosted application remains available when the laptop workers disconnect.
+The QoS-Aware Hybrid Cloud Task Scheduler accepts a one-column vibration CSV, forecasts finish time on two local workers and on one EC2 worker, and records why it placed the job. The default policy stays on a local worker when that forecast meets the deadline, and starts the stopped EC2 worker when the cloud forecast is the one that still lands on time inside the job budget and the run budget. The control plane is hosted in `us-east-1` and stays available when the laptop workers disconnect.
+
+## Open the running system
+
+- [Hosted dashboard](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/)
+- [Health check](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/api/health). A healthy API returns `{ "status": "ok" }` after it reads the jobs table.
+- Sign in with the steps in [aws/HOSTED.md](../../aws/HOSTED.md#sign-in). `Operator` includes Operations, runs, and metrics. `Student` submits, tracks, and downloads that account's jobs.
+- [sample-vibration.csv](sample-vibration.csv) is an 8-sample square wave. Submitted at 1,000 Hz with lags 2 through 4, the published result is 250 Hz and best lag 4. The [demo runbook](demo.md) uses that file for a local result, an EC2 deadline rescue while both laptop slots are busy, and a run after the laptop workers stop.
+
+## Deliverables
 
 | Deliverable | Where to find it |
 |---|---|
-| Project proposal | [Problem statement and objectives](proposal.md) |
-| System architecture | [Deployed architecture and Mermaid diagram](architecture.md) |
-| Working implementation | [Project source and setup](../../README.md) and [hosted app](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/) |
-| Cloud deployment and demonstration | [AWS deployment](../../aws/HOSTED.md) and [demo runbook](demo.md) |
-| Source code and README | [GitHub repository](https://github.com/harkirath1511/QoS-Aware_Scheduler) and [README](../../README.md) |
-| Project report | Four-page PDF in the submission package |
-| Final presentation and live demonstration | Editable presentation in the handoff and the [demo runbook](demo.md) |
+| Project proposal | [proposal.md](proposal.md): the problem, the five objectives, and the success checks the live demo has to meet |
+| System architecture | [architecture.md](architecture.md): the deployed path from the browser through API Gateway to the private app host, RDS, S3, and the burst worker |
+| Working implementation | [README](../../README.md) for the local stack, and the [hosted dashboard](https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/) for the running control plane |
+| Cloud deployment and demonstration | [aws/HOSTED.md](../../aws/HOSTED.md) for the hosted stacks, and [demo.md](demo.md) for the three classroom scenarios |
+| Source code and README | [TANICE-GAWD/qos-aware-scheduler](https://github.com/TANICE-GAWD/qos-aware-scheduler) |
+| Project report | Four-page PDF in the submission package, beside this repository |
+| Final presentation and live demonstration | Editable presentation in the handoff, presented with [demo.md](demo.md) |
 
-The [evaluation](../evaluation.md) compares the three policies. The [hosted acceptance summary](../../aws/HOSTED.md#live-acceptance-on-november-25-2026) records the browser, worker, AWS and restart checks. Access to hosted job details uses an authorized project token.
+## Measured results
+
+[docs/evaluation.md](../evaluation.md) replays the same arrivals under FCFS, priority, and QoS. On the live hybrid burst, QoS and priority each met 15 of 21 deadlines. QoS published six EC2 results and priority published eleven. The [hosted acceptance record](../../aws/HOSTED.md#live-acceptance-on-november-25-2026) keeps the browser download, the deadline rescue, the laptop-offline run, and the restart check, with links to the completed jobs.
