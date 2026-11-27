@@ -1,0 +1,97 @@
+How to present this project
+
+The website login and the command-line login are two different things. Stay on the root user. Do not create an IAM user. The only extra step is an access key for this computer, because Docker cannot pull the private worker image from the website alone.
+
+Do not paste the keys into chat.
+
+Setup, once
+
+1. Create a root access key.
+
+In the AWS website, signed in as root, click your account name at the top right, then Security credentials. Under Access keys, click Create access key. Leave the access key and the secret key on the screen.
+
+On this computer:
+
+aws configure --profile ucs531-qos
+
+Paste the access key, paste the secret key, set the region to us-east-1, and press Enter for the output format. Then check it:
+
+aws sts get-caller-identity --profile ucs531-qos
+
+It should print an account number. Close the key page.
+
+2. Install the project and prepare the two laptop workers.
+
+Do not paste the long AWS commands by hand. The line breaks make the shell split them. Run this instead:
+
+cd ~/Desktop/qos-aware-scheduler
+npm ci
+bash prepare-demo.sh
+
+node -v must be 22 or higher. If the shell says node is missing, run source ~/.nvm/nvm.sh and start this step again. If a docker command says permission denied, run: sudo bash prepare-demo.sh
+
+The script copies the sign-in token.
+
+3. Sign in before you share the screen.
+
+Health: https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/api/health
+It must say "status":"ok".
+
+Dashboard: https://4k3efjo42g.execute-api.us-east-1.amazonaws.com/
+
+Paste the token into Project access token and click Sign in. The corner should say Operator.
+
+4. Start the two laptop workers.
+
+cd ~/Desktop/qos-aware-scheduler
+DOCKER_CONFIG=/tmp/qos-docker docker compose --env-file .env.aws-workers -f compose.workers.yaml up -d
+
+Click Operations. The scheduler must be running, EC2 must be stopped, and both local workers must be healthy. The job you submitted earlier may start now. Let it finish before example 1.
+
+Example 1. The laptop does the work
+
+Click Jobs, then Submit job.
+
+Click Download a sample CSV and choose that file.
+Leave sample rate 1000, lags 2 and 4, priority Normal, expected time 10.
+Set Deadline to at least 2 minutes from now.
+Set Cloud budget to 0.
+Click Queue job.
+
+Open the job. The reason should say the laptop can finish before the deadline. The worker should be local-1 or local-2. Click Download result. It should say 250 Hz and best lag 4.
+
+Say: this job had no money, and a laptop worker was free, so the cloud stayed off.
+
+Example 2. Both laptop workers are busy, so the cloud saves the deadline
+
+The queue must be empty and EC2 must be stopped.
+
+cd ~/Desktop/qos-aware-scheduler
+bash run-connected.sh
+
+Leave it running until it prints: Hosted connected verification passed.
+It can take several minutes. The last line is the cloud job link. Open that link.
+
+Show him both finish-time predictions, that EC2 got the job, and the checksum. In Operations, open the run Hosted burst acceptance. Wait until EC2 is stopped again.
+
+Say: both laptop workers were busy. This job had money and a short deadline, so QoS turned the cloud computer on, finished in time, and turned it off.
+
+Example 3. The laptop is gone. The cloud still works
+
+cd ~/Desktop/qos-aware-scheduler
+DOCKER_CONFIG=/tmp/qos-docker docker compose --env-file .env.aws-workers -f compose.workers.yaml stop
+unset LOCAL_WORKER_CPUS
+
+Submit the sample twice.
+
+First job: same file, 1000, lags 2 and 4, Normal, expected time 10, deadline at least 3 minutes from now, cloud budget 0.03. Wait until it finishes on EC2, then download the result.
+
+Second job: the same settings, but cloud budget 0. It should stay queued. The reason should say EC2 exceeds the job budget, and the worker should stay unassigned.
+
+Say: the website is in AWS, not on this laptop. Turning the laptop workers off does not stop the site. A job with money still runs on EC2. A free job waits.
+
+Last line
+
+In Operations, show EC2 stopped, and say:
+
+On the same busy test, QoS and priority each finished 15 of 21 jobs on time. Priority used the cloud 11 times. QoS used it 6 times. QoS took longer on average, and it spent less.
